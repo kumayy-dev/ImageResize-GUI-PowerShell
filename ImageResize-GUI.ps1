@@ -280,7 +280,8 @@ function Resize-ImagesWindows {
         [System.Windows.Forms.ListBox]$ListBox,
         [System.Windows.Forms.Label]$StatusLabel,
         [System.Windows.Forms.ProgressBar]$ProgressBar,
-        [System.Windows.Forms.Form]$Form
+        [System.Windows.Forms.Form]$Form,
+        [string]$OutDirName
     )
 
     if ($ListBox.Items.Count -eq 0) {
@@ -343,8 +344,12 @@ function Resize-ImagesWindows {
 
             $graph.DrawImage($img, 0, 0, $newWidth, $newHeight)
 
-            $dir    = Split-Path $file.FullName -Parent
-            $outDir = Join-Path $dir ("Resized_{0}" -f $percent)
+            $dir = Split-Path $file.FullName -Parent
+            if ([string]::IsNullOrEmpty($OutDirName)) {
+                $outDir = Join-Path $dir ("Resized_{0}" -f $percent)
+            } else {
+                $outDir = Join-Path $dir $OutDirName
+            }
             if (-not (Test-Path $outDir)) {
                 New-Item -ItemType Directory -Path $outDir | Out-Null
             }
@@ -406,7 +411,8 @@ function Resize-ImagesMagick {
         [System.Windows.Forms.ListBox]$ListBox,
         [System.Windows.Forms.Label]$StatusLabel,
         [System.Windows.Forms.ProgressBar]$ProgressBar,
-        [System.Windows.Forms.Form]$Form
+        [System.Windows.Forms.Form]$Form,
+        [string]$OutDirName
     )
 
     if (-not (Test-Path $MagickPath)) {
@@ -441,7 +447,11 @@ function Resize-ImagesMagick {
             $base   = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
             $srcExt = [System.IO.Path]::GetExtension($file.Name).ToLower()
 
-            $outDir = Join-Path $dir ("ResizedIM_{0}" -f $percent)
+            if ([string]::IsNullOrEmpty($OutDirName)) {
+                $outDir = Join-Path $dir ("ResizedIM_{0}" -f $percent)
+            } else {
+                $outDir = Join-Path $dir $OutDirName
+            }
             if (-not (Test-Path $outDir)) {
                 New-Item -ItemType Directory -Path $outDir | Out-Null
             }
@@ -506,11 +516,88 @@ function Resize-ImagesMagick {
 }
 
 # ------------------------------------------------------------
+# 幅から縮小率(Scale)を求めるヘルパー & 幅指定リサイズラッパー
+# ------------------------------------------------------------
+function Get-ScaleFromTargetWidth {
+    param(
+        [int]$TargetWidth,
+        [System.Windows.Forms.ListBox]$ListBox
+    )
+
+    if ($ListBox.Items.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("ファイルが追加されていません。")
+        return $null
+    }
+
+    Add-Type -AssemblyName System.Drawing
+
+    $maxWidth = 0
+
+    foreach ($path in $ListBox.Items) {
+        if (-not (Test-Path $path)) { continue }
+
+        try {
+            $img = [System.Drawing.Image]::FromFile($path)
+            if ($img.Width -gt $maxWidth) {
+                $maxWidth = $img.Width
+            }
+            $img.Dispose()
+        }
+        catch {
+            # 幅取得に失敗した画像はスキップ
+        }
+    }
+
+    if ($maxWidth -le 0) {
+        [System.Windows.Forms.MessageBox]::Show("画像の幅を取得できませんでした。")
+        return $null
+    }
+
+    if ($maxWidth -le $TargetWidth) {
+        [System.Windows.Forms.MessageBox]::Show("すべての画像が指定した幅以下のため、リサイズは行いません。")
+        return $null
+    }
+
+    $scale = [double]$TargetWidth / [double]$maxWidth
+
+    return $scale
+}
+
+function Invoke-ResizeByWidthWindows {
+    param(
+        [int]$TargetWidth,
+        [string]$OutDirName
+    )
+
+    $scale = Get-ScaleFromTargetWidth -TargetWidth $TargetWidth -ListBox $listBox
+    if ($null -eq $scale) { return }
+
+    $q = $qualityTrackBar.Value
+    Resize-ImagesWindows -Scale $scale -JpegQuality $q -ListBox $listBox -StatusLabel $statusLabel -ProgressBar $progressBar -Form $form -OutDirName $OutDirName
+}
+
+function Invoke-ResizeByWidthMagick {
+    param(
+        [int]$TargetWidth,
+        [string]$OutDirName
+    )
+
+    $scale = Get-ScaleFromTargetWidth -TargetWidth $TargetWidth -ListBox $listBox
+    if ($null -eq $scale) { return }
+
+    $q  = $qualityTrackBar.Value
+    $st = $stripMetadataCheck.Checked
+    $wp = $webpCheck.Checked
+
+    Resize-ImagesMagick -Scale $scale -Quality $q -StripMetadata $st -ConvertWebP $wp -MagickPath $magickPath -ListBox $listBox -StatusLabel $statusLabel -ProgressBar $progressBar -Form $form -OutDirName $OutDirName
+}
+
+# ------------------------------------------------------------
 # ボタン生成（Tag に倍率を入れて sender.Tag から取得）
 # ------------------------------------------------------------
 $scales = @(60, 50, 40, 30, 20, 10)
 
-# Windows標準機能ボタン
+# Windows標準機能ボタン（％指定）
 foreach ($p in $scales) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Width  = 80
@@ -528,7 +615,26 @@ foreach ($p in $scales) {
     $winButtonPanel.Controls.Add($btn)
 }
 
-# ImageMagick ボタン
+# ▼ 追加：Windows標準機能 - 幅指定ボタン
+$btnWin1600 = New-Object System.Windows.Forms.Button
+$btnWin1600.Width  = 110
+$btnWin1600.Height = 30
+$btnWin1600.Text   = "写真系(1600px)"
+$btnWin1600.Add_Click({
+    Invoke-ResizeByWidthWindows -TargetWidth 1600 -OutDirName "Resized_photo"
+})
+$winButtonPanel.Controls.Add($btnWin1600)
+
+$btnWin1280 = New-Object System.Windows.Forms.Button
+$btnWin1280.Width  = 130
+$btnWin1280.Height = 30
+$btnWin1280.Text   = "アイコン系(1280px)"
+$btnWin1280.Add_Click({
+    Invoke-ResizeByWidthWindows -TargetWidth 1280 -OutDirName "Resized_icon"
+})
+$winButtonPanel.Controls.Add($btnWin1280)
+
+# ImageMagick ボタン（％指定）
 foreach ($p in $scales) {
     $btnIM = New-Object System.Windows.Forms.Button
     $btnIM.Width  = 80
@@ -548,6 +654,27 @@ foreach ($p in $scales) {
 
     $imButtonPanel.Controls.Add($btnIM)
 }
+
+# ▼ 追加：ImageMagick - 幅指定ボタン
+$btnIM1600 = New-Object System.Windows.Forms.Button
+$btnIM1600.Width  = 110
+$btnIM1600.Height = 30
+$btnIM1600.Text   = "写真系(1600px)"
+$btnIM1600.Enabled = $hasMagick
+$btnIM1600.Add_Click({
+    Invoke-ResizeByWidthMagick -TargetWidth 1600 -OutDirName "ResizedIM_photo"
+})
+$imButtonPanel.Controls.Add($btnIM1600)
+
+$btnIM1280 = New-Object System.Windows.Forms.Button
+$btnIM1280.Width  = 130
+$btnIM1280.Height = 30
+$btnIM1280.Text   = "アイコン系(1280px)"
+$btnIM1280.Enabled = $hasMagick
+$btnIM1280.Add_Click({
+    Invoke-ResizeByWidthMagick -TargetWidth 1280 -OutDirName "ResizedIM_icon"
+})
+$imButtonPanel.Controls.Add($btnIM1280)
 
 # クリア／中断／終了ボタンの動作
 $clearBtn.Add_Click({
